@@ -135,16 +135,6 @@ var rootCmd = &cobra.Command{
 				if err != nil {
 					return err
 				}
-
-				err = manageAllFields(ctx, res)
-				if err != nil {
-					return err
-				}
-
-				err = releaseAllFields(ctx, res)
-				if err != nil {
-					return err
-				}
 			}
 
 			return nil
@@ -237,76 +227,23 @@ func removeBeforeFirstApply(ctx context.Context, res cke.ResourceDefinition) err
 	if err != nil {
 		return fmt.Errorf("failed to get object for %s: %w", res.Key, err)
 	}
-
-	index := -1
-	for i, f := range obj.Current.GetManagedFields() {
-		if f.Manager == managerBeforeFirstApply && f.Operation == metav1.ManagedFieldsOperationUpdate {
-			index = i
-			break
-		}
-	}
-	if index == -1 {
-		return nil
-	}
-
 	log.Info("remove before-first-apply manager", map[string]interface{}{
 		"key": res.Key,
 	})
-	patch := fmt.Sprintf(`[{"op": "remove", "path": "/metadata/managedFields/%d"}]`, index)
-	if _, err := obj.Resource.Patch(ctx, obj.Current.GetName(), types.JSONPatchType, []byte(patch), metav1.PatchOptions{}); err != nil {
-		log.Error("failed to patch", map[string]interface{}{
-			"key":       res.Key,
-			log.FnError: err,
-		})
-		return err
-	}
-
-	return nil
-}
-
-func manageAllFields(ctx context.Context, res cke.ResourceDefinition) error {
-	obj, err := getObject(ctx, res)
-	if err != nil {
-		return fmt.Errorf("failed to get object for %s: %w", res.Key, err)
-	}
 
 	new := obj.Current.DeepCopy()
-	unstructured.RemoveNestedField(new.Object, "metadata", "managedFields")
 	unstructured.RemoveNestedField(new.Object, "status")
 
-	log.Info("manage all fields", map[string]interface{}{
-		"key": res.Key,
-	})
-	// apply current resource without change as Cleaner
-	if err := obj.Apply(ctx, new, managerCleaner, false); err != nil {
-		log.Error("failed to apply", map[string]interface{}{
-			"key":       res.Key,
-			log.FnError: err,
-		})
-		return err
+	var managedFields []metav1.ManagedFieldsEntry
+	for _, f := range new.GetManagedFields() {
+		if f.Manager != managerBeforeFirstApply {
+			managedFields = append(managedFields, f)
+		}
 	}
+	new.SetManagedFields(managedFields)
 
-	return nil
-}
-
-func releaseAllFields(ctx context.Context, res cke.ResourceDefinition) error {
-	obj, err := getObject(ctx, res)
-	if err != nil {
-		return fmt.Errorf("failed to get object for %s: %w", res.Key, err)
-	}
-
-	new := &unstructured.Unstructured{}
-	new.SetAPIVersion(obj.Current.GetAPIVersion())
-	new.SetKind(obj.Current.GetKind())
-	new.SetNamespace(obj.Current.GetNamespace())
-	new.SetName(obj.Current.GetName())
-
-	log.Info("release all fields", map[string]interface{}{
-		"key": res.Key,
-	})
-	// apply empty resource as Cleaner
-	if err := obj.Apply(ctx, new, managerCleaner, false); err != nil {
-		log.Error("failed to apply", map[string]interface{}{
+	if _, err := obj.Resource.Update(ctx, new, metav1.UpdateOptions{}); err != nil {
+		log.Error("failed to patch", map[string]interface{}{
 			"key":       res.Key,
 			log.FnError: err,
 		})
